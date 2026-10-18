@@ -250,6 +250,39 @@ td input{font-size:15px;padding:8px;min-width:70px}
       <li>En RawBT elige tu impresora, papel de <b>58 mm</b> y prueba que imprima.</li>
       <li>Vuelve aquí y prueba los dos tickets.</li>
     </ol>
+    <h3 style="margin-top:16px">👩‍🍳 Impresora de cocina en otro aparato</h3>
+    <p class="muted">Abre el link de cocina en el celular de la cocina (en iPhone, dentro de la app gratuita Bluefy). Ese aparato imprimirá solo los tickets de cocina. En esta tablet apaga “👩‍🍳 Ticket cocina” al tomar pedidos.</p>
+    <button class="btn small sec" onclick="copyKitchenLink()">📋 Copiar link de cocina</button>
+  </div>
+</section>
+
+<!-- MODO COCINA -->
+<section id="v-cocina" class="view">
+  <div class="card">
+    <h3>👩‍🍳 Modo cocina</h3>
+    <p class="muted">Este aparato imprime solo el ticket de cocina de cada pedido nuevo. Déjalo con esta página abierta y la pantalla encendida.</p>
+    <div id="kUrlBox" style="display:none">
+      <label>Link de Google Sheets (termina en /exec)</label>
+      <input id="kUrl" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+      <button class="btn small" style="margin-top:8px" onclick="kSaveUrl()">Guardar link</button>
+    </div>
+    <div class="stats">
+      <div class="stat">Impresora<b id="kPrn">Sin conectar</b></div>
+      <div class="stat">Pedidos<b id="kNet">—</b></div>
+    </div>
+    <button class="btn" id="kConnBtn" onclick="kConnect()">🔵 Conectar impresora</button>
+    <div class="flex" style="margin-top:8px">
+      <button class="btn small sec" onclick="kTest()">🖨️ Imprimir prueba</button>
+      <button class="btn small sec" onclick="kPoll(true)">🔄 Revisar pedidos ahora</button>
+    </div>
+    <p class="muted" id="kMsg"></p>
+  </div>
+  <div class="card">
+    <h3>Pedidos de hoy</h3>
+    <div class="tw"><table>
+      <thead><tr><th>#</th><th>Hora</th><th>Cliente</th><th>Productos</th><th>Estado</th></tr></thead>
+      <tbody id="kBody"></tbody>
+    </table></div>
   </div>
 </section>
 
@@ -705,6 +738,132 @@ async function recoverFromSheet(){
   }catch(e){toast('No se pudo leer la hoja. Revisa el link y que tengas internet.')}
 }
 
+/* ===== Modo cocina (impresora Bluetooth BLE, p. ej. iPhone con Bluefy) ===== */
+const KITCHEN=/[?&]cocina\b/.test(location.search);
+const BLE_SERVICES=['000018f0-0000-1000-8000-00805f9b34fb','e7810a71-73ae-499d-8c15-faa9aef0c3f2','49535343-fe7d-4ae5-8fa9-9fafd205e455','0000ff00-0000-1000-8000-00805f9b34fb','0000ffe0-0000-1000-8000-00805f9b34fb','0000fee7-0000-1000-8000-00805f9b34fb','0000ae30-0000-1000-8000-00805f9b34fb','0000ae00-0000-1000-8000-00805f9b34fb','0000fff0-0000-1000-8000-00805f9b34fb','0000ffb0-0000-1000-8000-00805f9b34fb','0000ff10-0000-1000-8000-00805f9b34fb'];
+let kDev=null,kChar=null,kBusy=false,kQueue=[],kSeen=null,kOrders=[],kSkipped=0;
+const ksleep=ms=>new Promise(r=>setTimeout(r,ms));
+function kMsg(t){$('#kMsg').textContent=t||''}
+function kSeenSet(d){
+  if(!kSeen||kSeen.d!==d){const saved=LS.get('bh_kseen_'+d,null);kSeen={d,ids:new Set(saved||[]),fresh:saved===null}}
+  return kSeen;
+}
+function kMark(id){const s=kSeenSet(ymd(new Date()));s.ids.add(id);s.fresh=false;LS.set('bh_kseen_'+s.d,[...s.ids])}
+async function kConnect(){
+  if(!navigator.bluetooth){kMsg('Este navegador no puede usar Bluetooth. En iPhone abre esta página en la app Bluefy; en Android, en Chrome.');return}
+  try{
+    kMsg('Elige tu impresora en la lista…');
+    const dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:BLE_SERVICES});
+    if(kDev&&kDev!==dev){try{kDev.gatt.disconnect()}catch(e){}}
+    kDev=dev;kDev.addEventListener('gattserverdisconnected',kOnDisc);
+    await kGatt();
+    toast('Impresora conectada ✓');
+  }catch(e){
+    const m=String(e&&e.message||e);
+    kMsg(/cancel|chooser/i.test(m)?'No elegiste ninguna impresora. Si no aparece en la lista, revisa que esté prendida y cerca.':'No se pudo conectar: '+m);
+    kRender();
+  }
+}
+async function kGatt(){
+  kChar=null;$('#kPrn').textContent='Conectando…';
+  const server=await kDev.gatt.connect();
+  let svcs=[];try{svcs=await server.getPrimaryServices()}catch(e){}
+  for(const s of svcs){
+    let chars=[];try{chars=await s.getCharacteristics()}catch(e){}
+    for(const c of chars){if(c.properties.write||c.properties.writeWithoutResponse){kChar=c;break}}
+    if(kChar)break;
+  }
+  if(!kChar){try{kDev.gatt.disconnect()}catch(e){}throw new Error('ese aparato no acepta impresión. ¿Elegiste la impresora correcta?')}
+  kMsg('');kRender();kFlush();
+}
+function kOnDisc(){if(!kChar&&!kDev)return;kChar=null;kRender();kMsg('Se desconectó la impresora. Intentando reconectar…');setTimeout(kReconnect,2000)}
+async function kReconnect(){
+  if(!kDev||kChar)return;
+  try{await kGatt();kMsg('')}
+  catch(e){kMsg('No se pudo reconectar. Revisa que la impresora esté prendida o toca "Conectar impresora".');setTimeout(kReconnect,15000)}
+}
+async function kWrite(str){
+  const b=new Uint8Array(str.length);for(let i=0;i<str.length;i++)b[i]=str.charCodeAt(i)&255;
+  const c=kChar,resp=!c.properties.writeWithoutResponse;
+  for(let i=0;i<b.length;i+=20){
+    const part=b.slice(i,i+20);
+    if(resp)await(c.writeValueWithResponse?c.writeValueWithResponse(part):c.writeValue(part));
+    else{await(c.writeValueWithoutResponse?c.writeValueWithoutResponse(part):c.writeValue(part));await ksleep(25)}
+  }
+}
+async function kFlush(){
+  if(kBusy)return;kBusy=true;
+  try{
+    while(kQueue.length&&kChar){
+      const o=kQueue[0];
+      try{await kWrite(escpos(kitchenLines(o)));kQueue.shift();if(!o._test)kMark(o.id);kRender()}
+      catch(e){kMsg('No se pudo imprimir el pedido #'+pad3(o.num)+'. Se reintentará al reconectar.');break}
+    }
+  }finally{kBusy=false;kRender()}
+}
+async function kPoll(manual){
+  const url=settings.sheetUrl;
+  if(!url){$('#kUrlBox').style.display='block';$('#kNet').textContent='Falta el link';return}
+  const d=ymd(new Date());
+  try{
+    let j=await(await fetchT(url+'?action=day&d='+d,{},20000)).json();
+    if(!j||!j.ok)throw 0;
+    if(!Array.isArray(j.orders))j=await(await fetchT(url+'?action=list',{},40000)).json();
+    const list=(j.orders||[]).filter(o=>o&&o.id&&o.date===d&&Array.isArray(o.items)).sort((a,b)=>a.ts-b.ts);
+    const s=kSeenSet(d);
+    if(s.fresh){list.forEach(o=>s.ids.add(o.id));kSkipped=list.length;s.fresh=false;LS.set('bh_kseen_'+d,[...s.ids])}
+    list.forEach(o=>{if(!s.ids.has(o.id)&&!kQueue.some(q=>q.id===o.id))kQueue.push(o)});
+    kOrders=list;$('#kNet').textContent='✓ '+hm(new Date());
+    if(manual)toast('Pedidos revisados');
+    kFlush();
+  }catch(e){$('#kNet').textContent='Sin conexión';if(manual)toast('No se pudo leer la hoja. Revisa internet y el link.')}
+  kRender();
+}
+function kRender(){
+  if(!KITCHEN)return;
+  $('#kPrn').textContent=kChar?('✓ '+(kDev&&kDev.name||'Conectada')):(kDev?'Desconectada':'Sin conectar');
+  $('#kConnBtn').textContent=kChar?'🔵 Cambiar de impresora':'🔵 Conectar impresora';
+  const s=kSeenSet(ymd(new Date()));
+  const rows=kOrders.slice().reverse().map(o=>{
+    const st=kQueue.some(q=>q.id===o.id&&!q._re)?'⏳ En cola':(s.ids.has(o.id)?'✓ Listo':'—');
+    return `<tr><td>${pad3(o.num)}</td><td>${esc(o.time)}</td><td><b>${esc(o.customer)}</b></td><td>${esc(prodSummary(o))}</td><td style="white-space:nowrap">${st} <button class="btn small sec" onclick="kReprint('${esc(o.id)}')">🖨️</button></td></tr>`;
+  }).join('');
+  $('#kBody').innerHTML=rows||'<tr><td colspan="5" class="empty">Aún no hay pedidos hoy</td></tr>';
+  if(kSkipped&&!kMsg.shown){kMsg.shown=1;if(!$('#kMsg').textContent)kMsg('Ya había '+kSkipped+' pedido(s) de hoy antes de abrir el Modo cocina; no se imprimieron. Usa 🖨️ si necesitas alguno.')}
+}
+function kReprint(id){const o=kOrders.find(x=>x.id===id);if(!o)return;kQueue.push(Object.assign({},o,{_re:true}));if(!kChar)toast('Conecta la impresora para imprimir');kFlush();kRender()}
+function kTest(){
+  const d=new Date();
+  kQueue.push({_test:true,id:'test',num:0,date:ymd(d),time:hm(d),customer:'Prueba cocina',pay:'',note:'',total:0,
+    items:[{cat:'Milk Tea',flavor:'Taro',name:'Milk Tea - Taro',size:'',base:16,sugar:'Medio',ice:'Frozen',toppings:[{name:'Popping boba mango',price:2}],qty:1,note:'',unit:18,total:18}]});
+  if(!kChar)toast('Primero conecta la impresora');kFlush();
+}
+function kSaveUrl(){
+  const v=$('#kUrl').value.trim();
+  if(!/^https:\/\/script\.google\.com\/.+\/exec$/.test(v))return toast('El link debe empezar con https://script.google.com y terminar en /exec');
+  settings.sheetUrl=v;LS.set('bh_settings',settings);$('#kUrlBox').style.display='none';kPoll(true);
+}
+async function kAwake(){
+  try{navigator.bluetooth&&navigator.bluetooth.setScreenDimEnabled&&navigator.bluetooth.setScreenDimEnabled(false)}catch(e){}
+  try{if(navigator.wakeLock)await navigator.wakeLock.request('screen')}catch(e){}
+}
+function startKitchen(){
+  const m=location.hash.match(/s=([A-Za-z0-9_-]{20,})/);
+  if(m){settings.sheetUrl='https://script.google.com/macros/s/'+m[1]+'/exec';LS.set('bh_settings',settings);try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}}
+  document.querySelectorAll('.view').forEach(e=>e.classList.toggle('on',e.id==='v-cocina'));
+  document.querySelector('nav').style.display='none';$('#sync').style.display='none';
+  $('#hoy').textContent='Modo cocina';
+  kRender();kAwake();kPoll();
+  setInterval(()=>kPoll(),6000);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden){kAwake();kPoll()}});
+  window.addEventListener('online',()=>kPoll());
+}
+function kitchenLink(){const m=(settings.sheetUrl||'').match(/\/s\/([^/]+)\/exec/);return location.origin+location.pathname+'?cocina'+(m?'#s='+m[1]:'')}
+function copyKitchenLink(){
+  const l=kitchenLink();
+  try{navigator.clipboard.writeText(l).then(()=>toast('Link de cocina copiado'),()=>prompt('Copia este link:',l))}catch(e){prompt('Copia este link:',l)}
+}
+
 /* ===== inicio ===== */
 function renderAll(){renderHeader();renderProducts();renderCart();renderPays();renderPrintBtns();renderSync()}
 (function init(){
@@ -714,6 +873,7 @@ function renderAll(){renderHeader();renderProducts();renderCart();renderPays();r
   if(inFrame)$('#frameWarn').style.display='block';
   try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
   renderAll();
+  if(KITCHEN){startKitchen();return}
   syncNow();setInterval(()=>syncNow(),60000);
   window.addEventListener('online',()=>syncNow());
 })();
