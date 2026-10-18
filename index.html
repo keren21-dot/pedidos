@@ -270,7 +270,8 @@ td input{font-size:15px;padding:8px;min-width:70px}
       <div class="stat">Impresora<b id="kPrn">Sin conectar</b></div>
       <div class="stat">Pedidos<b id="kNet">—</b></div>
     </div>
-    <button class="btn" id="kConnBtn" onclick="kConnect()">🔵 Conectar impresora</button>
+    <button class="btn" id="kConnBtn" onclick="kConnect(false)">🔵 Conectar impresora</button>
+    <p class="muted" style="margin:6px 0 0">¿No aparece tu impresora? <a href="#" onclick="kConnect(true);return false">Ver todos los aparatos</a> (apaga y prende la impresora: el que aparece y desaparece es ella).</p>
     <div class="flex" style="margin-top:8px">
       <button class="btn small sec" onclick="kTest()">🖨️ Imprimir prueba</button>
       <button class="btn small sec" onclick="kPoll(true)">🔄 Revisar pedidos ahora</button>
@@ -749,18 +750,20 @@ function kSeenSet(d){
   return kSeen;
 }
 function kMark(id){const s=kSeenSet(ymd(new Date()));s.ids.add(id);s.fresh=false;LS.set('bh_kseen_'+s.d,[...s.ids])}
-async function kConnect(){
+const PRN_NAMES=['Printer','printer','PRINTER','HOP','Hoin','HOIN','BlueTooth','Bluetooth','BT','MPT','MTP','PT-','POS','RPP','Inner','XP-','58','JP'];
+async function kConnect(all){
   if(!navigator.bluetooth){kMsg('Este navegador no puede usar Bluetooth. En iPhone abre esta página en la app Bluefy; en Android, en Chrome.');return}
   try{
-    kMsg('Elige tu impresora en la lista…');
-    const dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:BLE_SERVICES});
+    kMsg(all?'Lista completa: elige tu impresora…':'Buscando impresoras… elige la tuya en la lista.');
+    const filters=BLE_SERVICES.map(s=>({services:[s]})).concat(PRN_NAMES.map(n=>({namePrefix:n})));
+    const dev=await navigator.bluetooth.requestDevice(all?{acceptAllDevices:true,optionalServices:BLE_SERVICES}:{filters,optionalServices:BLE_SERVICES});
     if(kDev&&kDev!==dev){try{kDev.gatt.disconnect()}catch(e){}}
     kDev=dev;kDev.addEventListener('gattserverdisconnected',kOnDisc);
     await kGatt();
     toast('Impresora conectada ✓');
   }catch(e){
     const m=String(e&&e.message||e);
-    kMsg(/cancel|chooser/i.test(m)?'No elegiste ninguna impresora. Si no aparece en la lista, revisa que esté prendida y cerca.':'No se pudo conectar: '+m);
+    kMsg(/cancel|chooser|no device/i.test(m)?(all?'No elegiste ningún aparato.':'No apareció ninguna impresora. Revisa que esté prendida y cerca, o usa “Ver todos los aparatos”.'):'No se pudo conectar: '+m);
     kRender();
   }
 }
